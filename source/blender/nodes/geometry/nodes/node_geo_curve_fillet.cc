@@ -10,6 +10,7 @@
 #include "GEO_foreach_geometry.hh"
 
 #include "node_geometry_util.hh"
+#include <optional>
 
 namespace blender::nodes::node_geo_curve_fillet_cc {
 
@@ -37,6 +38,7 @@ static void node_declare(NodeDeclarationBuilder &b)
       .supported_type({GeometryComponent::Type::Curve, GeometryComponent::Type::GreasePencil})
       .description("Curves to generate rounded corners on");
   b.add_output<decl::Geometry>("Curve"_ustr).propagate_all_geometry().align_with_previous();
+  b.add_input<decl::Bool>("Selection"_ustr).default_value(true).evaluated_geometry_field();
   b.add_input<decl::Float>("Radius"_ustr)
       .min(0.0f)
       .max(FLT_MAX)
@@ -67,11 +69,13 @@ static bke::CurvesGeometry fillet_curve(const bke::CurvesGeometry &src_curves,
                                         const GeometryNodeCurveFilletMode mode,
                                         const fn::FieldContext &field_context,
                                         const std::optional<Field<int>> &count_field,
+                                        const Field<bool> &selection_field,
                                         const Field<float> &radius_field,
                                         const bool limit_radius,
                                         const AttributeFilter &attribute_filter)
 {
   fn::FieldEvaluator evaluator{field_context, src_curves.points_num()};
+  evaluator.add(selection_field);
   evaluator.add(radius_field);
 
   switch (mode) {
@@ -79,7 +83,8 @@ static bke::CurvesGeometry fillet_curve(const bke::CurvesGeometry &src_curves,
       evaluator.evaluate();
       return geometry::fillet_curves_bezier(src_curves,
                                             src_curves.curves_range(),
-                                            evaluator.get_evaluated<float>(0),
+
+                                            evaluator.get_evaluated<float>(1),
                                             limit_radius,
                                             attribute_filter);
     }
@@ -88,8 +93,9 @@ static bke::CurvesGeometry fillet_curve(const bke::CurvesGeometry &src_curves,
       evaluator.evaluate();
       return geometry::fillet_curves_poly(src_curves,
                                           src_curves.curves_range(),
-                                          evaluator.get_evaluated<float>(0),
-                                          evaluator.get_evaluated<int>(1),
+
+                                          evaluator.get_evaluated<float>(1),
+                                          evaluator.get_evaluated<int>(2),
                                           limit_radius,
                                           attribute_filter);
     }
@@ -100,6 +106,7 @@ static bke::CurvesGeometry fillet_curve(const bke::CurvesGeometry &src_curves,
 static void fillet_grease_pencil(GreasePencil &grease_pencil,
                                  const GeometryNodeCurveFilletMode mode,
                                  const std::optional<Field<int>> &count_field,
+                                 const Field<bool> &selection_field,
                                  const Field<float> &radius_field,
                                  const bool limit_radius,
                                  const AttributeFilter &attribute_filter)
@@ -120,6 +127,7 @@ static void fillet_grease_pencil(GreasePencil &grease_pencil,
                                                   mode,
                                                   field_context,
                                                   count_field,
+                                                  selection_field,
                                                   radius_field,
                                                   limit_radius,
                                                   attribute_filter);
@@ -133,7 +141,7 @@ static void node_geo_exec(GeoNodeExecParams params)
   GeometrySet geometry_set = params.extract_input<GeometrySet>("Curve"_ustr);
   const GeometryNodeCurveFilletMode mode = params.extract_input<GeometryNodeCurveFilletMode>(
       "Mode"_ustr);
-
+  Field<bool> selection_field = params.extract_input<Field<bool>>("Selection"_ustr);
   Field<float> radius_field = params.extract_input<Field<float>>("Radius"_ustr);
   const bool limit_radius = params.extract_input<bool>("Limit Radius"_ustr);
 
@@ -153,6 +161,7 @@ static void node_geo_exec(GeoNodeExecParams params)
                                                     mode,
                                                     field_context,
                                                     count_field,
+                                                    selection_field,
                                                     radius_field,
                                                     limit_radius,
                                                     attribute_filter);
@@ -162,8 +171,13 @@ static void node_geo_exec(GeoNodeExecParams params)
     }
     if (geometry_set.has_grease_pencil()) {
       GreasePencil &grease_pencil = *geometry_set.get_grease_pencil_for_write();
-      fillet_grease_pencil(
-          grease_pencil, mode, count_field, radius_field, limit_radius, attribute_filter);
+      fillet_grease_pencil(grease_pencil,
+                           mode,
+                           count_field,
+                           selection_field,
+                           radius_field,
+                           limit_radius,
+                           attribute_filter);
     }
   });
 
