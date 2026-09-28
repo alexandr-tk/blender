@@ -41,7 +41,7 @@ static void duplicate_fillet_point_data(const OffsetIndices<int> src_points_by_c
 static void calculate_result_offsets(const OffsetIndices<int> src_points_by_curve,
                                      const IndexMask &selection,
                                      const IndexMask &unselected,
-                                     const VArray<float> &radii,
+                                     const IndexMask &point_selection,
                                      const VArray<int> &counts,
                                      const Span<bool> cyclic,
                                      MutableSpan<int> dst_curve_offsets,
@@ -69,14 +69,12 @@ static void calculate_result_offsets(const OffsetIndices<int> src_points_by_curv
           point_counts.first() = 1;
           point_counts.last() = 1;
         }
-        /* Implicitly "deselect" points with zero radius. */
-        devirtualize_varray(radii, [&](const auto radii) {
-          for (const int i : IndexRange(src_points.size())) {
-            if (radii[src_points[i]] == 0.0f) {
-              point_counts[i] = 1;
-            }
+        /* Unselected points produce a single output point. */
+        for (const int i : IndexRange(src_points.size())) {
+          if (!point_selection.contains(src_points[i])) {
+            point_counts[i] = 1;
           }
-        });
+        }
 
         offset_indices::accumulate_counts_to_offsets(point_offsets);
 
@@ -373,6 +371,7 @@ static void calculate_bezier_handles_poly_mode(const Span<float3> src_handles_l,
 
 static bke::CurvesGeometry fillet_curves(const bke::CurvesGeometry &src_curves,
                                          const IndexMask &curve_selection,
+                                         const IndexMask &point_selection,
                                          const VArray<float> &radius_input,
                                          const VArray<int> &counts,
                                          const bool limit_radius,
@@ -396,7 +395,7 @@ static bke::CurvesGeometry fillet_curves(const bke::CurvesGeometry &src_curves,
   calculate_result_offsets(src_points_by_curve,
                            curve_selection,
                            unselected,
-                           radius_input,
+                           point_selection,
                            counts,
                            cyclic,
                            dst_curves.offsets_for_write(),
@@ -453,6 +452,12 @@ static bke::CurvesGeometry fillet_curves(const bke::CurvesGeometry &src_curves,
           if (limit_radius) {
             input_radii_buffer.reinitialize(src_points.size());
             radius_input.materialize_compressed(src_points, input_radii_buffer);
+            /* Ignore unselected points when limiting neighboring fillet radii. */
+            for (const int i : src_positions.index_range()) {
+              if (!point_selection.contains(src_points[i])) {
+                input_radii_buffer[i] = 0.0f;
+              }
+            }
             limit_radii(src_positions, angles, input_radii_buffer, cyclic[curve_i], radii);
           }
           else {
@@ -537,23 +542,32 @@ static bke::CurvesGeometry fillet_curves(const bke::CurvesGeometry &src_curves,
 
 bke::CurvesGeometry fillet_curves_poly(const bke::CurvesGeometry &src_curves,
                                        const IndexMask &curve_selection,
+                                       const IndexMask &point_selection,
                                        const VArray<float> &radius,
                                        const VArray<int> &count,
                                        const bool limit_radius,
                                        const bke::AttributeFilter &attribute_filter)
 {
-  return fillet_curves(
-      src_curves, curve_selection, radius, count, limit_radius, false, attribute_filter);
+  return fillet_curves(src_curves,
+                       curve_selection,
+                       point_selection,
+                       radius,
+                       count,
+                       limit_radius,
+                       false,
+                       attribute_filter);
 }
 
 bke::CurvesGeometry fillet_curves_bezier(const bke::CurvesGeometry &src_curves,
                                          const IndexMask &curve_selection,
+                                         const IndexMask &point_selection,
                                          const VArray<float> &radius,
                                          const bool limit_radius,
                                          const bke::AttributeFilter &attribute_filter)
 {
   return fillet_curves(src_curves,
                        curve_selection,
+                       point_selection,
                        radius,
                        VArray<int>::from_single(1, src_curves.points_num()),
                        limit_radius,

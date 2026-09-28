@@ -38,7 +38,10 @@ static void node_declare(NodeDeclarationBuilder &b)
       .supported_type({GeometryComponent::Type::Curve, GeometryComponent::Type::GreasePencil})
       .description("Curves to generate rounded corners on");
   b.add_output<decl::Geometry>("Curve"_ustr).propagate_all_geometry().align_with_previous();
-  b.add_input<decl::Bool>("Selection"_ustr).default_value(true).evaluated_geometry_field();
+  b.add_input<decl::Bool>("Selection"_ustr)
+      .default_value(true)
+      .hide_value()
+      .evaluated_geometry_field();
   b.add_input<decl::Float>("Radius"_ustr)
       .min(0.0f)
       .max(FLT_MAX)
@@ -83,7 +86,7 @@ static bke::CurvesGeometry fillet_curve(const bke::CurvesGeometry &src_curves,
       evaluator.evaluate();
       return geometry::fillet_curves_bezier(src_curves,
                                             src_curves.curves_range(),
-
+                                            evaluator.get_evaluated_as_mask(0),
                                             evaluator.get_evaluated<float>(1),
                                             limit_radius,
                                             attribute_filter);
@@ -93,7 +96,7 @@ static bke::CurvesGeometry fillet_curve(const bke::CurvesGeometry &src_curves,
       evaluator.evaluate();
       return geometry::fillet_curves_poly(src_curves,
                                           src_curves.curves_range(),
-
+                                          evaluator.get_evaluated_as_mask(0),
                                           evaluator.get_evaluated<float>(1),
                                           evaluator.get_evaluated<int>(2),
                                           limit_radius,
@@ -122,7 +125,7 @@ static void fillet_grease_pencil(GreasePencil &grease_pencil,
       continue;
     }
     const bke::GreasePencilLayerFieldContext field_context(
-        grease_pencil, AttrDomain::Curve, layer_index);
+        grease_pencil, AttrDomain::Point, layer_index);
     bke::CurvesGeometry dst_curves = fillet_curve(src_curves,
                                                   mode,
                                                   field_context,
