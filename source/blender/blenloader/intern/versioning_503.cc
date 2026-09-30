@@ -8,6 +8,8 @@
 
 #define DNA_DEPRECATED_ALLOW
 
+#include <fmt/format.h>
+
 #include "DNA_ID.h"
 #include "DNA_brush_types.h"
 #include "DNA_camera_types.h"
@@ -23,11 +25,14 @@
 #include "DNA_view3d_types.h"
 #include "DNA_windowmanager_types.h"
 
+#include "BLI_listbase.hh"
 #include "BLI_listbase_iterator.hh"
 #include "BLI_math_vector_c.hh"
 #include "BLI_string_ref.hh"
 #include "BLI_sys_types.hh"
 
+#include "BKE_anim_data.hh"
+#include "BKE_animsys.hh"
 #include "BKE_attribute.h"
 #include "BKE_attribute.hh"
 #include "BKE_camera.h"
@@ -86,6 +91,92 @@ static void do_version_merge_layers_options_to_inputs(bNodeTree &ntree, bNode &n
   }
   bNodeSocket &socket = version_node_add_socket(ntree, node, SOCK_IN, "NodeSocketMenu", "Mode");
   socket.default_value_typed<bNodeSocketValueMenu>()->value = storage.mode;
+}
+
+static void do_version_fillet_curve_add_selection_input(const DriverMap &driver_map,
+                                                        bNodeTree &ntree,
+                                                        bNode &node)
+{
+  if (blender::bke::node_find_socket(node, SOCK_IN, "Selection"_ustr)) {
+    return;
+  }
+
+  bNodeSocket *radius_socket = blender::bke::node_find_socket(node, SOCK_IN, "Radius"_ustr);
+  if (!radius_socket) {
+    return;
+  }
+
+  bNode *radius_source_node = nullptr;
+  bNodeSocket *radius_source_socket = nullptr;
+  for (bNodeLink &link : ntree.links) {
+    if (link.tosock == radius_socket) {
+      radius_source_node = link.fromnode;
+      radius_source_socket = link.fromsock;
+      break;
+    }
+  }
+
+  const bNodeSocketValueFloat radius = *static_cast<bNodeSocketValueFloat *>(
+      radius_socket->default_value);
+  if (!radius_source_node) {
+    /* Match animation using the original socket index, before adding Selection. */
+    const int radius_socket_index = BLI_findindex(&node.inputs, radius_socket);
+    const std::string radius_rna_path = fmt::format(
+        "nodes[\"{}\"].inputs[{}].default_value", BLI_str_escape(node.name), radius_socket_index);
+    const bool is_radius_animated = bke::animdata::prop_is_animated(ntree.adt, radius_rna_path, 0);
+
+    if (is_radius_animated) {
+      bNode &value_node = version_node_add_empty(ntree, "ShaderNodeValue");
+      bNodeSocket *value_socket = version_node_add_socket_if_not_exist(
+          &ntree, &value_node, SOCK_OUT, SOCK_FLOAT, PROP_NONE, "Value", "Value");
+      radius_source_node = &value_node;
+      radius_source_socket = value_socket;
+      version_node_add_link(ntree, value_node, *value_socket, node, *radius_socket);
+
+      value_socket->default_value_typed<bNodeSocketValueFloat>()->value = radius.value;
+
+      const std::string value_rna_path = fmt::format(
+          "nodes[\"{}\"].outputs[{}].default_value", BLI_str_escape(value_node.name), 0);
+      BKE_animdata_fix_paths(ntree.id,
+                             "",
+                             radius_rna_path,
+                             value_rna_path,
+                             /*verify_paths=*/false,
+                             driver_map);
+    }
+  }
+
+  bNodeSocket &selection_socket = version_node_add_socket(
+      ntree, node, SOCK_IN, "NodeSocketBool", "Selection");
+  if (radius_source_node) {
+    bNode &not_equal_node = version_node_add_empty(ntree, "FunctionNodeCompare");
+    auto *compare_storage = MEM_new<NodeFunctionCompare>(__func__);
+    compare_storage->operation = NODE_COMPARE_NOT_EQUAL;
+    compare_storage->data_type = SOCK_FLOAT;
+    not_equal_node.storage = compare_storage;
+    bNodeSocket *compare_a_socket = version_node_add_socket_if_not_exist(
+        &ntree, &not_equal_node, SOCK_IN, SOCK_FLOAT, PROP_NONE, "A", "A");
+    bNodeSocket *compare_b_socket = version_node_add_socket_if_not_exist(
+        &ntree, &not_equal_node, SOCK_IN, SOCK_FLOAT, PROP_NONE, "B", "B");
+    bNodeSocket *epsilon = version_node_add_socket_if_not_exist(
+        &ntree, &not_equal_node, SOCK_IN, SOCK_FLOAT, PROP_NONE, "Epsilon", "Epsilon");
+    bNodeSocket *compare_result = version_node_add_socket_if_not_exist(
+        &ntree, &not_equal_node, SOCK_OUT, SOCK_BOOLEAN, PROP_NONE, "Result", "Result");
+
+    compare_b_socket->default_value_typed<bNodeSocketValueFloat>()->value = 0.0f;
+    epsilon->default_value_typed<bNodeSocketValueFloat>()->value = 0.0f;
+    version_node_add_link(
+        ntree, *radius_source_node, *radius_source_socket, not_equal_node, *compare_a_socket);
+    version_node_add_link(ntree, not_equal_node, *compare_result, node, selection_socket);
+  }
+  else {
+    if (radius.value != 0.0f) {
+      selection_socket.default_value_typed<bNodeSocketValueBoolean>()->value = true;
+    }
+    else {
+      selection_socket.default_value_typed<bNodeSocketValueBoolean>()->value = false;
+    }
+  }
 }
 
 static void compositing_node_group_to_effect(Main &main, Scene &scene)
@@ -230,8 +321,8 @@ void do_versions_after_linking_503(FileData * /*fd*/, Main *bmain)
     /* The now deprecated compositing_node_group is always written on file writes for forward
      * compatibility, so it has to be reset to nullptr if no versioning was needed.
      *
-     * Todo(#140111): Forward compatibility support will be removed in 6.0, and this loop can then
-     * be placed behind a `MAIN_VERSION_FILE_OLDER(bmain, 600, xxx)` check . */
+     * Todo(#140111): Forward compatibility support will be removed in 6.0, and this loop can
+     * then be placed behind a `MAIN_VERSION_FILE_OLDER(bmain, 600, xxx)` check . */
     for (Scene &scene : bmain->scenes) {
       scene.compositing_node_group = nullptr;
     }
@@ -311,6 +402,20 @@ void do_versions_after_linking_503(FileData * /*fd*/, Main *bmain)
     }
   }
 
+  if (!MAIN_VERSION_FILE_ATLEAST(bmain, 503, 26)) {
+    const DriverMap driver_map = BKE_animdata_build_driver_target_map(*bmain);
+    FOREACH_NODETREE_BEGIN (bmain, node_tree, id) {
+      if (node_tree->type == NTREE_GEOMETRY) {
+        for (bNode &node : node_tree->nodes) {
+          if (STREQ(node.idname, "GeometryNodeFilletCurve")) {
+            do_version_fillet_curve_add_selection_input(driver_map, *node_tree, node);
+          }
+        }
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
   /**
    * Always bump subversion in BKE_blender_version.h when adding versioning
    * code here, and wrap it inside a MAIN_VERSION_FILE_ATLEAST check.
@@ -343,9 +448,9 @@ void blo_do_versions_503(FileData * /*fd*/, Library * /*lib*/, Main *bmain)
 
   /* The compositor previously did not support default inputs for group nodes, but some built-in
    * nodes had the position field default type for some inputs, so node groups would gain it as a
-   * default type through some operators. Later, the default inputs were supported for group nodes,
-   * though position field were not supported in the compositor, so it would assert. To fix this,
-   * we reset any position field default input to the default value. */
+   * default type through some operators. Later, the default inputs were supported for group
+   * nodes, though position field were not supported in the compositor, so it would assert. To
+   * fix this, we reset any position field default input to the default value. */
   if (!MAIN_VERSION_FILE_ATLEAST(bmain, 503, 3)) {
     FOREACH_NODETREE_BEGIN (bmain, node_tree, id) {
       if (node_tree->type == NTREE_COMPOSIT) {
@@ -675,10 +780,10 @@ void blo_do_versions_503(FileData * /*fd*/, Library * /*lib*/, Main *bmain)
    */
 
   /* Keep this versioning always enabled at the bottom of the function; it can only be moved
-   * behind a subversion bump when the file format is changed (#mesh_skin_to_legacy is removed from
-   * #mesh_blend_write). Since that function keeps writing the old-format #CD_MVERT_SKIN layer for
-   * forward compatibility, files saved by *this* version also need
-   * this conversion to run unconditionally on read, not just for files older than this subversion.
+   * behind a subversion bump when the file format is changed (#mesh_skin_to_legacy is removed
+   * from #mesh_blend_write). Since that function keeps writing the old-format #CD_MVERT_SKIN
+   * layer for forward compatibility, files saved by *this* version also need this conversion to
+   * run unconditionally on read, not just for files older than this subversion.
    */
   for (Mesh &mesh : bmain->meshes) {
     bke::mesh_skin_to_generic(mesh);
