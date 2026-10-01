@@ -97,10 +97,6 @@ static void do_version_fillet_curve_add_selection_input(const DriverMap &driver_
                                                         bNodeTree &ntree,
                                                         bNode &node)
 {
-  if (blender::bke::node_find_socket(node, SOCK_IN, "Selection"_ustr)) {
-    return;
-  }
-
   bNodeSocket *radius_socket = blender::bke::node_find_socket(node, SOCK_IN, "Radius"_ustr);
   if (!radius_socket) {
     return;
@@ -118,36 +114,28 @@ static void do_version_fillet_curve_add_selection_input(const DriverMap &driver_
 
   const bNodeSocketValueFloat radius = *static_cast<bNodeSocketValueFloat *>(
       radius_socket->default_value);
-  if (!radius_source_node) {
+  const int radius_socket_index = BLI_findindex(&node.inputs, radius_socket);
+  const std::string radius_rna_path = fmt::format(
+      "nodes[\"{}\"].inputs[{}].default_value", BLI_str_escape(node.name), radius_socket_index);
+  const bool is_radius_animated = bke::animdata::prop_is_animated(ntree.adt, radius_rna_path, 0);
+  const bool is_radius_unlinked_and_animated = !radius_source_node && is_radius_animated;
+  if (is_radius_unlinked_and_animated) {
     /* Match animation using the original socket index, before adding Selection. */
-    const int radius_socket_index = BLI_findindex(&node.inputs, radius_socket);
-    const std::string radius_rna_path = fmt::format(
-        "nodes[\"{}\"].inputs[{}].default_value", BLI_str_escape(node.name), radius_socket_index);
-    const bool is_radius_animated = bke::animdata::prop_is_animated(ntree.adt, radius_rna_path, 0);
+    bNode &value_node = version_node_add_empty(ntree, "ShaderNodeValue");
+    bNodeSocket *value_socket = version_node_add_socket_if_not_exist(
+        &ntree, &value_node, SOCK_OUT, SOCK_FLOAT, PROP_NONE, "Value", "Value");
+    radius_source_node = &value_node;
+    radius_source_socket = value_socket;
+    version_node_add_link(ntree, value_node, *value_socket, node, *radius_socket);
 
-    if (is_radius_animated) {
-      bNode &value_node = version_node_add_empty(ntree, "ShaderNodeValue");
-      bNodeSocket *value_socket = version_node_add_socket_if_not_exist(
-          &ntree, &value_node, SOCK_OUT, SOCK_FLOAT, PROP_NONE, "Value", "Value");
-      radius_source_node = &value_node;
-      radius_source_socket = value_socket;
-      version_node_add_link(ntree, value_node, *value_socket, node, *radius_socket);
-
-      value_socket->default_value_typed<bNodeSocketValueFloat>()->value = radius.value;
-
-      const std::string value_rna_path = fmt::format(
-          "nodes[\"{}\"].outputs[{}].default_value", BLI_str_escape(value_node.name), 0);
-      BKE_animdata_fix_paths(ntree.id,
-                             "",
-                             radius_rna_path,
-                             value_rna_path,
-                             /*verify_paths=*/false,
-                             driver_map);
-    }
+    value_socket->default_value_typed<bNodeSocketValueFloat>()->value = radius.value;
+  }
+  bNodeSocket *selection_socket = blender::bke::node_find_socket(node, SOCK_IN, "Selection"_ustr);
+  if (!selection_socket) {
+    selection_socket = &version_node_add_socket(
+        ntree, node, SOCK_IN, "NodeSocketBool", "Selection");
   }
 
-  bNodeSocket &selection_socket = version_node_add_socket(
-      ntree, node, SOCK_IN, "NodeSocketBool", "Selection");
   if (radius_source_node) {
     bNode &not_equal_node = version_node_add_empty(ntree, "FunctionNodeCompare");
     auto *compare_storage = MEM_new<NodeFunctionCompare>(__func__);
@@ -167,14 +155,25 @@ static void do_version_fillet_curve_add_selection_input(const DriverMap &driver_
     epsilon->default_value_typed<bNodeSocketValueFloat>()->value = 0.0f;
     version_node_add_link(
         ntree, *radius_source_node, *radius_source_socket, not_equal_node, *compare_a_socket);
-    version_node_add_link(ntree, not_equal_node, *compare_result, node, selection_socket);
+    version_node_add_link(ntree, not_equal_node, *compare_result, node, *selection_socket);
+    bke::node_tree_set_type(ntree);
+    if (is_radius_unlinked_and_animated) {
+      const std::string value_rna_path = fmt::format(
+          "nodes[\"{}\"].outputs[{}].default_value", BLI_str_escape(radius_source_node->name), 0);
+      BKE_animdata_fix_paths(ntree.id,
+                             "",
+                             radius_rna_path,
+                             value_rna_path,
+                             /*verify_paths=*/false,
+                             driver_map);
+    }
   }
   else {
     if (radius.value != 0.0f) {
-      selection_socket.default_value_typed<bNodeSocketValueBoolean>()->value = true;
+      selection_socket->default_value_typed<bNodeSocketValueBoolean>()->value = true;
     }
     else {
-      selection_socket.default_value_typed<bNodeSocketValueBoolean>()->value = false;
+      selection_socket->default_value_typed<bNodeSocketValueBoolean>()->value = false;
     }
   }
 }
