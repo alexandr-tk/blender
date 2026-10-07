@@ -19,11 +19,13 @@
 #include "BLI_math_quaternion_types.hh"
 #include "BLI_math_vector_c.hh"
 #include "BLI_math_vector_types.hh"
+#include "BLI_set.hh"
 #include "BLI_string.hh"
 #include "BLI_string_utf8.hh"
 #include "BLI_utildefines.hh"
 
 #include "BKE_action.hh"
+#include "BKE_anim_data.hh"
 #include "BKE_animsys.hh"
 #include "BKE_compositor.hh"
 #include "BKE_geometry_set.hh"
@@ -447,14 +449,6 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
                                                  const Span<bNodeSocket *> old_sockets,
                                                  const Span<bNodeSocket *> new_sockets)
 {
-  std::optional<std::pair<animrig::Action *, animrig::Slot *>> action_and_slot =
-      animrig::get_action_slot_pair(ntree.id);
-  if (!action_and_slot) {
-    return;
-  }
-  animrig::Action &action = *action_and_slot->first;
-  animrig::Slot &slot = *action_and_slot->second;
-
   Map<UString, int> new_index_by_identifier;
   for (const int new_i : new_sockets.index_range()) {
     const bNodeSocket &new_socket = *new_sockets[new_i];
@@ -488,54 +482,129 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
   const StringRef inout_str = in_out == SOCK_IN ? "inputs" : "outputs";
   bool animation_changed = false;
 
-  if (!removed_indices.is_empty()) {
-    for (const int removed_i : removed_indices) {
-      const std::string old_path = fmt::format("{}.{}[{}]", node_path, inout_str, removed_i);
-      if (BKE_animdata_fix_paths_remove(&ntree.id, old_path.c_str())) {
+  struct DriverTargetInfo {
+    DriverTarget *target;
+    ID *owner_id;
+    FCurve *fcurve;
+  };
+
+  Vector<DriverTargetInfo> driver_target_infos;
+  BKE_animdata_main_cb(&bmain, [&](ID *owner_id, AnimData *adt) {
+    for (FCurve &driver_fcurve : adt->drivers) {
+      if (!driver_fcurve.driver) {
+        continue;
+      }
+      for (DriverVar &driver_var : driver_fcurve.driver->variables) {
+        for (DriverTarget &target : MutableSpan(driver_var.targets, driver_var.num_targets)) {
+          if (!target.id) {
+            continue;
+          }
+          if (target.id == &ntree.id) {
+            driver_target_infos.append({&target, owner_id, &driver_fcurve});
+          }
+        }
+      }
+    }
+  });
+
+  const auto construct_new_rna_path = [&](const StringRef old_path) -> char * {
+    if (!old_path.startswith(node_path)) {
+      return nullptr;
+    }
+    for (const IndexMove &index_move : moved_indices) {
+      const std::string old_path_prefix = fmt::format(
+          "{}.{}[{}]", node_path, inout_str, index_move.old_i);
+      if (!old_path.startswith(old_path_prefix)) {
+        continue;
+      }
+      const std::string new_path = fmt::format("{}.{}[{}]{}",
+                                               node_path,
+                                               inout_str,
+                                               index_move.new_i,
+                                               old_path.substr(old_path_prefix.size()));
+      animation_changed = true;
+      return BLI_strdup(new_path.c_str());
+    }
+    return nullptr;
+  };
+
+  /* Update targets before removing local drivers, which may own some of these targets. */
+  Set<ID *> changed_owner_ids;
+  for (const int removed_i : removed_indices) {
+    const std::string old_path = fmt::format("{}.{}[{}]", node_path, inout_str, removed_i);
+    for (DriverTargetInfo driver_target_info : driver_target_infos) {
+      StringRef target_rna = driver_target_info.target->rna_path;
+      if (target_rna.startswith(old_path)) {
+        MEM_SAFE_DELETE(driver_target_info.target->rna_path);
+        driver_target_info.fcurve->flag &= ~FCURVE_DISABLED;
+        driver_target_info.fcurve->driver->flag &= ~DRIVER_FLAG_INVALID;
+        changed_owner_ids.add(driver_target_info.owner_id);
         animation_changed = true;
       }
     }
   }
-  if (!moved_indices.is_empty()) {
-    auto construct_new_rna_path = [&](const StringRef old_path) -> char * {
-      if (!old_path.startswith(node_path)) {
-        return nullptr;
-      }
-      for (const IndexMove &index_move : moved_indices) {
-        const std::string old_path_prefix = fmt::format(
-            "{}.{}[{}]", node_path, inout_str, index_move.old_i);
-        if (!old_path.startswith(old_path_prefix)) {
-          continue;
-        }
-        const std::string new_path = fmt::format("{}.{}[{}]{}",
-                                                 node_path,
-                                                 inout_str,
-                                                 index_move.new_i,
-                                                 old_path.substr(old_path_prefix.size()));
-        animation_changed = true;
-        return BLI_strdup(new_path.c_str());
-      }
-      return nullptr;
-    };
 
-    /* All index changes have to be applied in a single pass over the fcurves. Otherwise, when
-     * sockets swap their position, the same fcurve may be modified twice and ends up with its
-     * original rna path. */
-    animrig::foreach_fcurve_in_action_slot(action, slot.handle, [&](FCurve &fcurve) {
+  if (!moved_indices.is_empty()) {
+    for (DriverTargetInfo driver_target_info : driver_target_infos) {
+      if (char *new_path = construct_new_rna_path(driver_target_info.target->rna_path)) {
+        MEM_delete(driver_target_info.target->rna_path);
+        driver_target_info.target->rna_path = new_path;
+        driver_target_info.fcurve->flag &= ~FCURVE_DISABLED;
+        driver_target_info.fcurve->driver->flag &= ~DRIVER_FLAG_INVALID;
+        changed_owner_ids.add(driver_target_info.owner_id);
+      }
+    }
+  }
+
+  /* Flag all owners which were affected by the target updates. */
+  for (ID *owner_id : changed_owner_ids) {
+    DEG_id_tag_update(owner_id, ID_RECALC_SYNC_TO_EVAL);
+  }
+
+  for (const int removed_i : removed_indices) {
+    const std::string old_path = fmt::format("{}.{}[{}]", node_path, inout_str, removed_i);
+    if (BKE_animdata_fix_paths_remove(&ntree.id, old_path.c_str())) {
+      animation_changed = true;
+    }
+  }
+
+  /* All index changes have to be applied in a single pass over the fcurves. Otherwise, when
+   * sockets swap their position, the same fcurve may be modified twice and ends up with its
+   * original rna path. */
+  Set<std::pair<bAction *, animrig::slot_handle_t>> processed_action_slots;
+  const auto process_action_slot = [&](animrig::Action &action,
+                                       const animrig::slot_handle_t slot_handle) -> bool {
+    /* The same Action and slot may be used by multiple NLA strips or by the active Action. */
+    if (processed_action_slots.contains({&action, slot_handle})) {
+      return true;
+    }
+    processed_action_slots.add({&action, slot_handle});
+    bool action_paths_changed = false;
+    animrig::foreach_fcurve_in_action_slot(action, slot_handle, [&](FCurve &fcurve) {
       if (char *new_path = construct_new_rna_path(fcurve.rna_path())) {
         fcurve.rna_path_set_move(new_path);
+        action_paths_changed = true;
       }
     });
+    if (action_paths_changed) {
+      DEG_id_tag_update(&action.id, ID_RECALC_SYNC_TO_EVAL);
+    }
+    return true;
+  };
+  animrig::foreach_action_slot_use(ntree.id, process_action_slot);
+
+  if (ntree.adt) {
     for (FCurve &driver_fcurve : ntree.adt->drivers) {
       if (char *new_path = construct_new_rna_path(driver_fcurve.rna_path())) {
         driver_fcurve.rna_path_set_move(new_path);
+        driver_fcurve.flag &= ~FCURVE_DISABLED;
+        driver_fcurve.driver->flag &= ~DRIVER_FLAG_INVALID;
       }
     }
   }
 
   if (animation_changed) {
     DEG_id_tag_update(&ntree.id, ID_RECALC_ANIMATION);
-    DEG_id_tag_update(&action.id, ID_RECALC_SYNC_TO_EVAL);
     DEG_relations_tag_update(&bmain);
   }
 }

@@ -15,6 +15,8 @@
 
 #include "BLT_translation.hh"
 
+#include "DEG_depsgraph.hh"
+
 namespace blender::animrig::legacy {
 
 /* Lots of template args to support transparent non-const and const versions. */
@@ -156,6 +158,9 @@ bool action_fcurves_remove(bAction &action,
       fcurve_index--;
       any_removed = true;
     }
+  }
+  if (any_removed) {
+    DEG_id_tag_update(&action.id, ID_RECALC_SYNC_TO_EVAL);
   }
   return any_removed;
 }

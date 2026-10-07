@@ -61,6 +61,7 @@ Vector<bActionGroup *> channel_groups_for_assigned_slot(AnimData *adt);
 
 /**
  * Remove all F-Curves whose RNA path starts with the given prefix from an Action Slot.
+ * Tag the Action for an evaluated-data update if any curves were removed.
  *
  * \param rna_path_prefix: All F-Curves whose RNA path start with this string will get removed.
  * Note that there is no other semantics here, so `prefix = "rotation"` will remove
