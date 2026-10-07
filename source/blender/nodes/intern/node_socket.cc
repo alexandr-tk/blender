@@ -488,6 +488,7 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
     FCurve *fcurve;
   };
 
+  /* External drivers need updating even when the node tree has no animation data itself. */
   Vector<DriverTargetInfo> driver_target_infos;
   BKE_animdata_main_cb(&bmain, [&](ID *owner_id, AnimData *adt) {
     for (FCurve &driver_fcurve : adt->drivers) {
@@ -496,9 +497,6 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
       }
       for (DriverVar &driver_var : driver_fcurve.driver->variables) {
         for (DriverTarget &target : MutableSpan(driver_var.targets, driver_var.num_targets)) {
-          if (!target.id) {
-            continue;
-          }
           if (target.id == &ntree.id) {
             driver_target_infos.append({&target, owner_id, &driver_fcurve});
           }
@@ -528,13 +526,15 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
     return nullptr;
   };
 
-  /* Update targets before removing local drivers, which may own some of these targets. */
+  /* Update targets before removing local drivers, which may own some of these targets.
+   * References to deleted sockets get updated first as they must inspect original indices. */
   Set<ID *> changed_owner_ids;
   for (const int removed_i : removed_indices) {
-    const std::string old_path = fmt::format("{}.{}[{}]", node_path, inout_str, removed_i);
-    for (DriverTargetInfo driver_target_info : driver_target_infos) {
-      StringRef target_rna = driver_target_info.target->rna_path;
-      if (target_rna.startswith(old_path)) {
+    const std::string removed_path_prefix = fmt::format(
+        "{}.{}[{}]", node_path, inout_str, removed_i);
+    for (const DriverTargetInfo &driver_target_info : driver_target_infos) {
+      StringRef target_path = driver_target_info.target->rna_path;
+      if (target_path.startswith(removed_path_prefix)) {
         MEM_SAFE_DELETE(driver_target_info.target->rna_path);
         driver_target_info.fcurve->flag &= ~FCURVE_DISABLED;
         driver_target_info.fcurve->driver->flag &= ~DRIVER_FLAG_INVALID;
@@ -545,7 +545,7 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
   }
 
   if (!moved_indices.is_empty()) {
-    for (DriverTargetInfo driver_target_info : driver_target_infos) {
+    for (const DriverTargetInfo &driver_target_info : driver_target_infos) {
       if (char *new_path = construct_new_rna_path(driver_target_info.target->rna_path)) {
         MEM_delete(driver_target_info.target->rna_path);
         driver_target_info.target->rna_path = new_path;
@@ -558,12 +558,13 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
 
   /* Flag all owners which were affected by the target updates. */
   for (ID *owner_id : changed_owner_ids) {
-    DEG_id_tag_update(owner_id, ID_RECALC_SYNC_TO_EVAL);
+    DEG_id_tag_update(owner_id, ID_RECALC_ANIMATION);
   }
 
   for (const int removed_i : removed_indices) {
-    const std::string old_path = fmt::format("{}.{}[{}]", node_path, inout_str, removed_i);
-    if (BKE_animdata_fix_paths_remove(&ntree.id, old_path.c_str())) {
+    const std::string removed_path_prefix = fmt::format(
+        "{}.{}[{}]", node_path, inout_str, removed_i);
+    if (BKE_animdata_fix_paths_remove(&ntree.id, removed_path_prefix.c_str())) {
       animation_changed = true;
     }
   }
@@ -575,10 +576,10 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
   const auto process_action_slot = [&](animrig::Action &action,
                                        const animrig::slot_handle_t slot_handle) -> bool {
     /* The same Action and slot may be used by multiple NLA strips or by the active Action. */
-    if (processed_action_slots.contains({&action, slot_handle})) {
+    if (!processed_action_slots.add({&action, slot_handle})) {
       return true;
     }
-    processed_action_slots.add({&action, slot_handle});
+
     bool action_paths_changed = false;
     animrig::foreach_fcurve_in_action_slot(action, slot_handle, [&](FCurve &fcurve) {
       if (char *new_path = construct_new_rna_path(fcurve.rna_path())) {
@@ -598,7 +599,9 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
       if (char *new_path = construct_new_rna_path(driver_fcurve.rna_path())) {
         driver_fcurve.rna_path_set_move(new_path);
         driver_fcurve.flag &= ~FCURVE_DISABLED;
-        driver_fcurve.driver->flag &= ~DRIVER_FLAG_INVALID;
+        if (driver_fcurve.driver) {
+          driver_fcurve.driver->flag &= ~DRIVER_FLAG_INVALID;
+        }
       }
     }
   }
