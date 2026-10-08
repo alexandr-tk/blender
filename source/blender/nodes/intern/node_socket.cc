@@ -565,7 +565,6 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
   for (const int removed_i : removed_indices) {
     const std::string removed_path_prefix = fmt::format(
         "{}.{}[{}]", node_path, inout_str, removed_i);
-
     if (BKE_animdata_fix_paths_remove(&ntree.id, removed_path_prefix.c_str(), &remapped_fcurves)) {
       animation_changed = true;
     }

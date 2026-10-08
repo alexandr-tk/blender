@@ -21,8 +21,11 @@ bNodeSocket *node_add_socket_from_template(bNodeTree *ntree,
                                            bke::bNodeSocketTemplate *stemp,
                                            eNodeSocketInOut in_out);
 
-void node_verify_sockets(
-    Main *bmain, bNodeTree *ntree, bNode *node, bool do_id_user, Set<FCurve *> *remapped_fcurves);
+void node_verify_sockets(Main *bmain,
+                         bNodeTree *ntree,
+                         bNode *node,
+                         bool do_id_user,
+                         Set<FCurve *> *remapped_fcurves = nullptr);
 
 void register_standard_node_socket_types();
 
