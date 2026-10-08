@@ -13,7 +13,6 @@
 
 #include "BKE_fcurve.hh"
 
-#include "BLI_set.hh"
 #include "BLT_translation.hh"
 
 #include "DEG_depsgraph.hh"
