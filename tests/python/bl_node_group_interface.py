@@ -549,6 +549,88 @@ class NodeGroupInterfaceAnimationTest(AbstractNodeGroupInterfaceTest):
                     bpy.context.scene.frame_set(frame)
                     self.assertEqual(self.evaluated_location(obj).x, expected)
 
+    def make_shared_action_nodes(self, output_sockets, mode):
+        group = bpy.data.node_groups.new("Shared socket group", "GeometryNodeTree")
+        direction = 'OUTPUT' if output_sockets else 'INPUT'
+        for name, value in self.socket_values.items():
+            socket = group.interface.new_socket(name, in_out=direction, socket_type='NodeSocketFloat')
+            socket.default_value = value
+        tree = bpy.data.node_groups.new("Shared Action tree", "GeometryNodeTree")
+        for _ in range(2):
+            node = tree.nodes.new('GeometryNodeGroup')
+            node.node_tree = group
+            sockets = node.outputs if output_sockets else node.inputs
+            action, slot, channelbag = self.keyframe_sockets(sockets)
+
+        other_tree = tree.copy()
+        other_tree.animation_data.action = action
+        other_tree.animation_data.action_slot = slot
+        tracks = []
+        if mode != 'active':
+            for parent in (tree, other_tree):
+                track = parent.animation_data.nla_tracks.new()
+                strip = track.strips.new("Shared socket animation", 1, action)
+                strip.action_slot = slot
+                track.mute = mode == 'muted_nla'
+                parent.animation_data.action = None
+                tracks.append(track)
+
+        observers = []
+        for parent in (tree, other_tree):
+            for node in parent.nodes:
+                sockets = node.outputs if output_sockets else node.inputs
+                obj = self.make_driver_owner()
+                for axis, name in enumerate(self.socket_values):
+                    self.add_socket_driver(obj, 'location', sockets[name], index=axis)
+                observers.append(obj)
+        return group, tree, channelbag, tracks, observers
+
+    def test_shared_action_slot_socket_reordering(self):
+        """Shared curves must move once, while other nodes and later edits still update."""
+        for output_sockets in (False, True):
+            for mode in ('active', 'nla', 'muted_nla'):
+                with self.subTest(output_sockets=output_sockets, mode=mode):
+                    group, tree, channelbag, tracks, observers = self.make_shared_action_nodes(output_sockets, mode)
+                    for position in (0, 2):
+                        group.interface.move(group.interface.items_tree['B'], position)
+                        expected_paths = set()
+                        for node in tree.nodes:
+                            sockets = node.outputs if output_sockets else node.inputs
+                            expected_paths.update(sockets[name].path_from_id('default_value')
+                                                  for name in self.socket_values)
+                        self.assertEqual({curve.data_path for curve in channelbag.fcurves}, expected_paths)
+                        for track in tracks:
+                            track.mute = False
+                        for frame, multiplier in ((1, 1), (10, 2)):
+                            bpy.context.scene.frame_set(frame)
+                            for obj in observers:
+                                self.assertEqual(tuple(self.evaluated_location(obj)),
+                                                 tuple(value * multiplier for value in self.socket_values.values()))
+
+    def test_shared_action_slot_socket_removal(self):
+        """Deletion must preserve curves already moved by another tree in this update."""
+        for output_sockets in (False, True):
+            for mode in ('active', 'nla', 'muted_nla'):
+                with self.subTest(output_sockets=output_sockets, mode=mode):
+                    group, tree, channelbag, tracks, observers = self.make_shared_action_nodes(output_sockets, mode)
+                    # C takes B's old index. Updating the second tree must not delete C's curves.
+                    for removed_name, surviving_names in (('B', ('A', 'C')), ('C', ('A',))):
+                        group.interface.remove(group.interface.items_tree[removed_name])
+                        expected_paths = set()
+                        for node in tree.nodes:
+                            sockets = node.outputs if output_sockets else node.inputs
+                            expected_paths.update(sockets[name].path_from_id('default_value')
+                                                  for name in surviving_names)
+                        self.assertEqual({curve.data_path for curve in channelbag.fcurves}, expected_paths)
+                        for track in tracks:
+                            track.mute = False
+                        for frame, multiplier in ((1, 1), (10, 2)):
+                            bpy.context.scene.frame_set(frame)
+                            expected = tuple(value * multiplier if name in surviving_names else -10.0
+                                             for name, value in self.socket_values.items())
+                            for obj in observers:
+                                self.assertEqual(tuple(self.evaluated_location(obj)), expected)
+
     def test_shared_action_other_slot_unchanged(self):
         """Remapping one tree must not change another slot with identical RNA paths."""
         group, node, sockets = self.make_group_node()

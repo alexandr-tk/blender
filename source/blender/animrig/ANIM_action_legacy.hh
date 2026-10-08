@@ -12,6 +12,7 @@
  */
 #pragma once
 
+#include "BLI_set.hh"
 #include "BLI_vector.hh"
 
 #include "ANIM_action.hh"
@@ -67,10 +68,14 @@ Vector<bActionGroup *> channel_groups_for_assigned_slot(AnimData *adt);
  * Note that there is no other semantics here, so `prefix = "rotation"` will remove
  * "rotation_euler" as well. The prefix may not be an empty string.
  *
+ * \param remapped_fcurves: Curves already remapped by another tree must not be removed using
+ * their new socket indices. Null keeps the ordinary prefix-based removal behavior.
+ *
  * \return true if any were removed, false otherwise.
  */
 bool action_fcurves_remove(bAction &action,
                            slot_handle_t slot_handle,
-                           StringRefNull rna_path_prefix);
+                           StringRefNull rna_path_prefix,
+                           const Set<FCurve *> *remapped_fcurves = nullptr);
 
 }  // namespace blender::animrig::legacy

@@ -32,6 +32,7 @@
 
 #include <type_traits>
 
+#include "BLI_set.hh"
 #include "DNA_ID.h"
 #include "DNA_listBase.h"
 #include "DNA_sdna_type_ids.hh"
@@ -53,6 +54,7 @@ struct ListBase;
 struct Main;
 struct WriteData;
 struct FileData;
+struct FCurve;
 enum eReportType : uint16_t;
 
 template<typename T> class BlendStructWriter;
@@ -373,6 +375,8 @@ struct BlendDataReader {
 struct BlendLibReader {
   FileData *fd;
   Main *main;
+  /** Shared by all node-tree callbacks during one lib-linking pass. Owned by the caller. */
+  Set<FCurve *> *remapped_fcurves = nullptr;
 };
 
 /* -------------------------------------------------------------------- */

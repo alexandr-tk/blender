@@ -429,6 +429,8 @@ class NodeTreeMainUpdater {
   Map<bNodeTree *, TreeUpdateResult> update_result_by_tree_;
   NodeTreeRelations relations_;
   bool needs_relations_update_ = false;
+  /* Track shared F-Curves across all trees updated by this operation. */
+  Set<FCurve *> remapped_fcurves_;
 
  public:
   NodeTreeMainUpdater(Main *bmain, const NodeTreeUpdateExtraParams &params)
@@ -784,7 +786,7 @@ class NodeTreeMainUpdater {
           /* Should have been created when the node was registered. */
           BLI_assert(ntype.static_declaration != nullptr);
           if (ntype.static_declaration->is_context_dependent) {
-            nodes::update_node_declaration_and_sockets(ntree, *node, bmain_);
+            nodes::update_node_declaration_and_sockets(ntree, *node, bmain_, &remapped_fcurves_);
           }
         }
         else if (node->is_undefined()) {

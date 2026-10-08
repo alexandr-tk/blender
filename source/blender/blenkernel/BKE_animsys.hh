@@ -8,6 +8,7 @@
  * \ingroup bke
  */
 
+#include "BLI_set.hh"
 #include "DNA_listBase.h"
 
 #include "BLI_bit_vector.hh"
@@ -205,9 +206,13 @@ void BKE_animdata_fix_paths(ID &id,
  * Remove any animation data (F-Curves from Actions, and drivers) that have an
  * RNA path starting with `prefix`.
  *
+ * \param remapped_fcurves: Optional set of already remapped Action curves to preserve.
+ *
  * Return true if any animation data was affected.
  */
-bool BKE_animdata_fix_paths_remove(ID *id, const char *prefix);
+bool BKE_animdata_fix_paths_remove(ID *id,
+                                   const char *prefix,
+                                   const Set<FCurve *> *remapped_fcurves = nullptr);
 
 /**
  * Remove drivers that have an RNA path starting with `prefix`.

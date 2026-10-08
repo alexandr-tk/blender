@@ -13,6 +13,7 @@
 
 #include "BKE_fcurve.hh"
 
+#include "BLI_set.hh"
 #include "BLT_translation.hh"
 
 #include "DEG_depsgraph.hh"
@@ -133,7 +134,8 @@ Vector<bActionGroup *> channel_groups_for_assigned_slot(AnimData *adt)
 
 bool action_fcurves_remove(bAction &action,
                            const slot_handle_t slot_handle,
-                           const StringRefNull rna_path_prefix)
+                           const StringRefNull rna_path_prefix,
+                           const Set<FCurve *> *remapped_fcurves)
 {
   BLI_assert(!rna_path_prefix.is_empty());
   if (rna_path_prefix.is_empty()) {
@@ -153,7 +155,9 @@ bool action_fcurves_remove(bAction &action,
       continue;
     }
 
-    if (rna_path.startswith(rna_path_prefix)) {
+    if (rna_path.startswith(rna_path_prefix) &&
+        (!remapped_fcurves || !remapped_fcurves->contains(fcurve)))
+    {
       bag->fcurve_remove_by_index(fcurve_index);
       fcurve_index--;
       any_removed = true;

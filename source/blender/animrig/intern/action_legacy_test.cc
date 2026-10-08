@@ -14,6 +14,7 @@
 #include "DNA_anim_types.h"
 
 #include "BLI_listbase.hh"
+#include "BLI_set.hh"
 
 #include "testing/testing.h"
 
@@ -111,6 +112,29 @@ TEST_F(ActionLegacyTest, action_fcurves_remove)
 
   EXPECT_EQ(4, bag_2.fcurves().size())
       << "Expected all F-Curves for slot 2 to be there after manipulating slot 1";
+}
+
+TEST_F(ActionLegacyTest, action_fcurves_remove_preserves_remapped_curves)
+{
+  Action &action = create_empty_action()->wrap();
+  Slot &slot = action.slot_add();
+  action.layer_keystrip_ensure();
+  Channelbag &bag = action.strip_keyframe_data()[0]->channelbag_for_slot_ensure(slot);
+  FCurve &protected_curve = bag.fcurve_ensure(nullptr, {"rotation_euler", 0});
+  bag.fcurve_ensure(nullptr, {"rotation_mode", 0});
+  FCurve &unrelated_curve = bag.fcurve_ensure(nullptr, {"location", 0});
+  Set<FCurve *> remapped_fcurves;
+  remapped_fcurves.add(&protected_curve);
+
+  EXPECT_TRUE(legacy::action_fcurves_remove(action, slot.handle, "rotation", &remapped_fcurves));
+  Vector<FCurve *> expected = {&protected_curve, &unrelated_curve};
+  EXPECT_EQ(expected.as_span(), bag.fcurves());
+  EXPECT_FALSE(legacy::action_fcurves_remove(action, slot.handle, "rotation", &remapped_fcurves));
+
+  /* Without protection, ordinary prefix-based removal still removes the remaining curve. */
+  EXPECT_TRUE(legacy::action_fcurves_remove(action, slot.handle, "rotation"));
+  EXPECT_EQ(1, bag.fcurves().size());
+  EXPECT_EQ(&unrelated_curve, bag.fcurve(0));
 }
 
 }  // namespace blender::animrig::tests

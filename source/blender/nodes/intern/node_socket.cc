@@ -447,7 +447,8 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
                                                  bNode &node,
                                                  const eNodeSocketInOut in_out,
                                                  const Span<bNodeSocket *> old_sockets,
-                                                 const Span<bNodeSocket *> new_sockets)
+                                                 const Span<bNodeSocket *> new_sockets,
+                                                 Set<FCurve *> &remapped_fcurves)
 {
   Map<UString, int> new_index_by_identifier;
   for (const int new_i : new_sockets.index_range()) {
@@ -564,7 +565,8 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
   for (const int removed_i : removed_indices) {
     const std::string removed_path_prefix = fmt::format(
         "{}.{}[{}]", node_path, inout_str, removed_i);
-    if (BKE_animdata_fix_paths_remove(&ntree.id, removed_path_prefix.c_str())) {
+
+    if (BKE_animdata_fix_paths_remove(&ntree.id, removed_path_prefix.c_str(), &remapped_fcurves)) {
       animation_changed = true;
     }
   }
@@ -582,8 +584,14 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
 
     bool action_paths_changed = false;
     animrig::foreach_fcurve_in_action_slot(action, slot_handle, [&](FCurve &fcurve) {
+      /* Different trees can share the same slot. Do not interpret an already remapped path
+       * using another tree's original socket indices. */
+      if (remapped_fcurves.contains(&fcurve)) {
+        return;
+      }
       if (char *new_path = construct_new_rna_path(fcurve.rna_path())) {
         fcurve.rna_path_set_move(new_path);
+        remapped_fcurves.add(&fcurve);
         action_paths_changed = true;
       }
     });
@@ -616,7 +624,8 @@ static void refresh_node_sockets_and_panels(Main *bmain,
                                             bNodeTree &ntree,
                                             bNode &node,
                                             const NodeDeclaration &node_decl,
-                                            const bool do_id_user)
+                                            const bool do_id_user,
+                                            Set<FCurve *> *remapped_fcurves)
 {
   if (!node.runtime->forward_compatible_versioning_done) {
     do_forward_compat_versioning(node, node_decl);
@@ -680,8 +689,12 @@ static void refresh_node_sockets_and_panels(Main *bmain,
   /* Animation rna paths use the socket index, so they need to be updated when the socket order
    * changes. */
   if (bmain) {
-    refresh_node_sockets_animation_inout(*bmain, ntree, node, SOCK_IN, old_inputs, new_inputs);
-    refresh_node_sockets_animation_inout(*bmain, ntree, node, SOCK_OUT, old_outputs, new_outputs);
+    Set<FCurve *> local_remapped_fcurves;
+    Set<FCurve *> &remapped = remapped_fcurves ? *remapped_fcurves : local_remapped_fcurves;
+    refresh_node_sockets_animation_inout(
+        *bmain, ntree, node, SOCK_IN, old_inputs, new_inputs, remapped);
+    refresh_node_sockets_animation_inout(
+        *bmain, ntree, node, SOCK_OUT, old_outputs, new_outputs, remapped);
   }
 
   /* Destroy any remaining sockets that are no longer in the declaration. */
@@ -707,19 +720,26 @@ static void refresh_node_sockets_and_panels(Main *bmain,
   }
 }
 
-static void refresh_node(
-    Main *bmain, bNodeTree &ntree, bNode &node, nodes::NodeDeclaration &node_decl, bool do_id_user)
+static void refresh_node(Main *bmain,
+                         bNodeTree &ntree,
+                         bNode &node,
+                         nodes::NodeDeclaration &node_decl,
+                         bool do_id_user,
+                         Set<FCurve *> *remapped_fcurves)
 {
   if (node_decl.skip_updating_sockets) {
     return;
   }
   if (!node_decl.matches(node)) {
-    refresh_node_sockets_and_panels(bmain, ntree, node, node_decl, do_id_user);
+    refresh_node_sockets_and_panels(bmain, ntree, node, node_decl, do_id_user, remapped_fcurves);
   }
   bke::node_socket_declarations_update(&node);
 }
 
-void update_node_declaration_and_sockets(bNodeTree &ntree, bNode &node, Main *bmain)
+void update_node_declaration_and_sockets(bNodeTree &ntree,
+                                         bNode &node,
+                                         Main *bmain,
+                                         Set<FCurve *> *remapped_fcurves)
 {
   if (node.typeinfo->declare) {
     if (node.typeinfo->static_declaration->is_context_dependent) {
@@ -729,7 +749,7 @@ void update_node_declaration_and_sockets(bNodeTree &ntree, bNode &node, Main *bm
       build_node_declaration(*node.typeinfo, *node.runtime->declaration, &ntree, &node);
     }
   }
-  refresh_node(bmain, ntree, node, *node.runtime->declaration, true);
+  refresh_node(bmain, ntree, node, *node.runtime->declaration, true, remapped_fcurves);
 }
 
 bool socket_type_supports_fields(const eNodeSocketDatatype socket_type)
@@ -765,7 +785,8 @@ bool socket_type_supports_grids(const eNodeSocketDatatype socket_type)
 
 }  // namespace nodes
 
-void node_verify_sockets(Main *bmain, bNodeTree *ntree, bNode *node, bool do_id_user)
+void node_verify_sockets(
+    Main *bmain, bNodeTree *ntree, bNode *node, bool do_id_user, Set<FCurve *> *remapped_fcurves)
 {
   bke::bNodeType *ntype = node->typeinfo;
   if (ntype == nullptr) {
@@ -773,7 +794,7 @@ void node_verify_sockets(Main *bmain, bNodeTree *ntree, bNode *node, bool do_id_
   }
   if (ntype->declare) {
     bke::node_declaration_ensure_on_outdated_node(*ntree, *node);
-    refresh_node(bmain, *ntree, *node, *node->runtime->declaration, do_id_user);
+    refresh_node(bmain, *ntree, *node, *node->runtime->declaration, do_id_user, remapped_fcurves);
     return;
   }
   /* Don't try to match socket lists when there are no templates.

@@ -3967,7 +3967,8 @@ static int lib_link_cb(LibraryIDLinkCallbackData *cb_data)
 
 static void lib_link_all(FileData *fd, Main *bmain)
 {
-  BlendLibReader reader = {fd, bmain};
+  Set<FCurve *> remapped_fcurves;
+  BlendLibReader reader = {fd, bmain, &remapped_fcurves};
 
   ID *id;
   FOREACH_MAIN_ID_BEGIN (bmain, id) {

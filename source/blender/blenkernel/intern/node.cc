@@ -2230,7 +2230,7 @@ static void ntree_blend_read_after_liblink(BlendLibReader *reader, ID *id)
                                         node.typeinfo->static_declaration->is_context_dependent;
       const bool references_another_id = node.id != nullptr;
       if (!(is_context_dependent && references_another_id)) {
-        node_verify_sockets(reader->main, ntree, &node, false);
+        node_verify_sockets(reader->main, ntree, &node, false, reader->remapped_fcurves);
       }
     }
   }
@@ -2562,7 +2562,7 @@ namespace bke {
 static void node_add_sockets_from_type(bNodeTree *ntree, bNode *node, bNodeType *ntype)
 {
   if (ntype->declare) {
-    node_verify_sockets(nullptr, ntree, node, true);
+    node_verify_sockets(nullptr, ntree, node, true, nullptr);
     return;
   }
   bNodeSocketTemplate *sockdef;
@@ -5187,7 +5187,7 @@ void node_remove_node(
     BLI_str_escape(propname_esc, node.name, sizeof(propname_esc));
     SNPRINTF_UTF8(prefix, "nodes[\"%s\"]", propname_esc);
 
-    if (BKE_animdata_fix_paths_remove(&ntree.id, prefix)) {
+    if (BKE_animdata_fix_paths_remove(&ntree.id, prefix, nullptr)) {
       if (bmain != nullptr) {
         DEG_relations_tag_update(bmain);
       }
