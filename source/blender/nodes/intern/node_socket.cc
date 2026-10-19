@@ -602,6 +602,10 @@ static void refresh_node_sockets_animation_inout(Main &bmain,
   animrig::foreach_action_slot_use(ntree.id, process_action_slot);
 
   if (ntree.adt) {
+    if (ntree.adt->tmpact) {
+      /* The Action displaced by NLA tweak mode is not visited by foreach_action_slot_use. */
+      process_action_slot((*ntree.adt->tmpact).wrap(), ntree.adt->tmp_slot_handle);
+    }
     for (FCurve &driver_fcurve : ntree.adt->drivers) {
       if (char *new_path = construct_new_rna_path(driver_fcurve.rna_path())) {
         driver_fcurve.rna_path_set_move(new_path);

@@ -1116,7 +1116,7 @@ bool BKE_animdata_fix_paths_remove(ID *id,
   }
   if (adt->tmpact) {
     any_removed |= animrig::legacy::action_fcurves_remove(
-        *adt->action, adt->tmp_slot_handle, prefix, remapped_fcurves);
+        *adt->tmpact, adt->tmp_slot_handle, prefix, remapped_fcurves);
   }
 
   /* Drivers. */

@@ -549,6 +549,79 @@ class NodeGroupInterfaceAnimationTest(AbstractNodeGroupInterfaceTest):
                     bpy.context.scene.frame_set(frame)
                     self.assertEqual(self.evaluated_location(obj).x, expected)
 
+    def make_tweak_mode_animation(self, sockets):
+        action, slot, channelbag = self.keyframe_sockets(sockets)
+        tree = sockets['A'].id_data
+        adt = tree.animation_data
+        strip_action = action.copy()
+        strip_slot = strip_action.slots[0]
+        strip_channelbag = strip_action.layers[0].strips[0].channelbag(strip_slot)
+
+        track = adt.nla_tracks.new()
+        strip = track.strips.new("Tweak mode socket animation", 1, strip_action)
+        strip.action_slot = strip_slot
+        adt.nla_tracks.active = track
+        track.select = True
+        strip.select = True
+        adt.use_tweak_mode = True
+        self.assertTrue(adt.use_tweak_mode)
+        self.assertEqual(adt.action, strip_action)
+        self.assertEqual(adt.action_tweak_storage, action)
+        self.assertEqual(adt.action_slot, strip_slot)
+        self.assertEqual(adt.action_slot_handle_tweak_storage, slot.handle)
+        return action, (channelbag, strip_channelbag), track
+
+    def test_tweak_mode_socket_reordering(self):
+        """Socket paths must follow reordering in both the edited and displaced Actions."""
+        for group_input in (False, True):
+            with self.subTest(group_input=group_input):
+                group, node, sockets = self.make_group_node(group_input)
+                action, channelbags, track = self.make_tweak_mode_animation(sockets)
+                curves_by_action = [
+                    {name: bag.fcurves.find(sockets[name].path_from_id('default_value'))
+                     for name in self.socket_values}
+                    for bag in channelbags
+                ]
+                obj = self.make_driver_owner()
+                for axis, name in enumerate(self.socket_values):
+                    self.add_socket_driver(obj, 'location', sockets[name], index=axis)
+
+                group.interface.move(group.interface.items_tree['B'], 0)
+                node.id_data.animation_data.use_tweak_mode = False
+                self.assertEqual(node.id_data.animation_data.action, action)
+                for curves in curves_by_action:
+                    for name, fcurve in curves.items():
+                        self.assertEqual(fcurve.data_path, sockets[name].path_from_id('default_value'))
+                track.mute = True
+                for frame, multiplier in ((1, 1), (10, 2)):
+                    bpy.context.scene.frame_set(frame)
+                    self.assertEqual(tuple(self.evaluated_location(obj)),
+                                     tuple(value * multiplier for value in self.socket_values.values()))
+
+    def test_tweak_mode_socket_removal(self):
+        """Removing a socket must clean both Actions and preserve the remaining animation."""
+        for group_input in (False, True):
+            with self.subTest(group_input=group_input):
+                group, node, sockets = self.make_group_node(group_input)
+                action, channelbags, track = self.make_tweak_mode_animation(sockets)
+                obj = self.make_driver_owner()
+                for axis, name in enumerate(self.socket_values):
+                    self.add_socket_driver(obj, 'location', sockets[name], index=axis)
+
+                # Removing B also moves C, exercising deletion and reordering in the same update.
+                group.interface.remove(group.interface.items_tree['B'])
+                node.id_data.animation_data.use_tweak_mode = False
+                self.assertEqual(node.id_data.animation_data.action, action)
+                expected_paths = {sockets[name].path_from_id('default_value') for name in ('A', 'C')}
+                for bag in channelbags:
+                    self.assertEqual(len(bag.fcurves), 2)
+                    self.assertEqual({curve.data_path for curve in bag.fcurves}, expected_paths)
+                track.mute = True
+                for frame, multiplier in ((1, 1), (10, 2)):
+                    bpy.context.scene.frame_set(frame)
+                    self.assertEqual(tuple(self.evaluated_location(obj)),
+                                     (11.0 * multiplier, -10.0, 33.0 * multiplier))
+
     def make_shared_action_nodes(self, output_sockets, mode):
         group = bpy.data.node_groups.new("Shared socket group", "GeometryNodeTree")
         direction = 'OUTPUT' if output_sockets else 'INPUT'
